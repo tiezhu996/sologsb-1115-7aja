@@ -36,9 +36,14 @@ export const specimenStore = create<SpecimenState>((set, get) => ({
   },
   bulkSetStatus: async (ids, status) => {
     const targets = get().rows.filter((row) => ids.includes(row.id))
+    // 外借中的标本锁定，不允许批量推进鉴定状态（待归位已回馆，允许推进）
+    const activeLoans = await db.loans.filter((loan) => !loan.returnedDate).toArray()
+    const loanedIds = new Set(activeLoans.map((loan) => loan.specimenId))
+    const writable = targets.filter((row) => !loanedIds.has(row.id))
+    if (writable.length === 0) return
     await putRows<Specimen>(
       db.specimens,
-      targets.map((row) => ({ ...row, status }))
+      writable.map((row) => ({ ...row, status }))
     )
     await get().hydrate()
   },

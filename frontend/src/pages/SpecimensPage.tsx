@@ -1,13 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { DetStatus, Specimen } from '@/types'
-import { DET_STATUSES } from '@/types'
+import type { CustodyStatus, DetStatus, Specimen } from '@/types'
+import { CUSTODY_STATUSES, DET_STATUSES } from '@/types'
 import SpecimenCard from '@/components/common/SpecimenCard'
 import StatusTag from '@/components/common/StatusTag'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { useSpecimenFilter } from '@/hooks/useSpecimenFilter'
 import { specimenStore } from '@/stores/specimenStore'
 import { siteStore } from '@/stores/siteStore'
+import { loanStore } from '@/stores/loanStore'
+import { custodyOf, isOverdue, latestLoanOf } from '@/utils/custody'
 import { downloadCsv } from '@/utils/export'
 import { specimenTaxon } from '@/utils/codec'
 
@@ -15,13 +17,19 @@ import { specimenTaxon } from '@/utils/codec'
 export default function SpecimensPage(): JSX.Element {
   const specimens = usePersistentStore(specimenStore, (state) => state.rows)
   const sites = usePersistentStore(siteStore, (state) => state.rows)
-  const { filter, setFilter, reset, filtered, hitCount, orders, families } = useSpecimenFilter(specimens)
+  const loans = usePersistentStore(loanStore, (state) => state.rows)
+  const custodyOfStable = useCallback((id: string): CustodyStatus => custodyOf(loans, id), [loans])
+  const { filter, setFilter, reset, filtered, hitCount, orders, families } = useSpecimenFilter(specimens, {
+    custodyOf: custodyOfStable
+  })
   const [selected, setSelected] = useState<string[]>([])
   const [batchStatus, setBatchStatus] = useState<DetStatus>('初鉴')
   const [message, setMessage] = useState('')
 
   const siteMap = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
   const selectedSet = useMemo(() => new Set(selected), [selected])
+  const custodyCount = (status: CustodyStatus): number =>
+    specimens.filter((item) => custodyOf(loans, item.id) === status).length
 
   const toggle = (id: string): void => {
     setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
@@ -36,10 +44,21 @@ export default function SpecimensPage(): JSX.Element {
       setMessage('请先勾选要推进状态的标本')
       return
     }
-    await specimenStore.getState().bulkSetStatus(selected, batchStatus)
-    setMessage(`已把 ${selected.length} 份标本推进为「${batchStatus}」`)
+    const loaned = selected.filter((id) => custodyOf(loans, id) === '外借中')
+    const writable = selected.filter((id) => custodyOf(loans, id) !== '外借中')
+    if (writable.length === 0) {
+      setMessage(`所选标本均在外借中（${loaned.map(codeOf).join('、')}），归还前不能推进鉴定状态`)
+      return
+    }
+    await specimenStore.getState().bulkSetStatus(writable, batchStatus)
+    setMessage(
+      `已把 ${writable.length} 份标本推进为「${batchStatus}」` +
+        (loaned.length > 0 ? `；外借中的 ${loaned.length} 份（${loaned.map(codeOf).join('、')}）已跳过` : '')
+    )
     setSelected([])
   }
+
+  const codeOf = (id: string): string => specimens.find((item) => item.id === id)?.code ?? id
 
   const exportList = (): void => {
     const rows = filtered.map((item: Specimen) => ({
@@ -50,7 +69,8 @@ export default function SpecimensPage(): JSX.Element {
       method: item.method,
       quantity: item.quantity,
       status: item.status,
-      determiner: item.determiner
+      determiner: item.determiner,
+      custody: custodyOf(loans, item.id)
     }))
     downloadCsv('标本清单.csv', rows as unknown as Record<string, unknown>[], [
       { key: 'code', label: '标本编号' },
@@ -60,7 +80,8 @@ export default function SpecimensPage(): JSX.Element {
       { key: 'method', label: '采集方式' },
       { key: 'quantity', label: '数量' },
       { key: 'status', label: '鉴定状态' },
-      { key: 'determiner', label: '鉴定人' }
+      { key: 'determiner', label: '鉴定人' },
+      { key: 'custody', label: '保管状态' }
     ])
   }
 
@@ -121,6 +142,21 @@ export default function SpecimensPage(): JSX.Element {
           >
             <option value="">全部</option>
             {DET_STATUSES.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <span className="field-label">保管状态</span>
+          <select
+            className="field-input w-32"
+            value={filter.custody}
+            onChange={(e) => setFilter({ custody: e.target.value as CustodyStatus | '' })}
+          >
+            <option value="">全部</option>
+            {CUSTODY_STATUSES.map((status) => (
               <option key={status} value={status}>
                 {status}
               </option>
@@ -201,31 +237,41 @@ export default function SpecimensPage(): JSX.Element {
               <StatusTag status={status} /> {statusCount(status)}
             </span>
           ))}
+          {CUSTODY_STATUSES.map((status) => (
+            <span key={status} className="inline-flex items-center gap-1 font-medium">
+              {status} {custodyCount(status)}
+            </span>
+          ))}
         </div>
         {message ? <p className="w-full text-sm text-field-700">{message}</p> : null}
       </section>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((specimen) => (
-          <SpecimenCard
-            key={specimen.id}
-            specimen={specimen}
-            site={siteMap.get(specimen.siteId)}
-            selectable
-            selected={selectedSet.has(specimen.id)}
-            onToggle={toggle}
-            footer={
-              <>
-                <Link className="btn-ghost" to="/determination">
-                  去鉴定
-                </Link>
-                <Link className="btn-ghost" to="/storage">
-                  去入柜
-                </Link>
-              </>
-            }
-          />
-        ))}
+        {filtered.map((specimen) => {
+          const loan = latestLoanOf(loans, specimen.id)
+          return (
+            <SpecimenCard
+              key={specimen.id}
+              specimen={specimen}
+              site={siteMap.get(specimen.siteId)}
+              selectable
+              selected={selectedSet.has(specimen.id)}
+              onToggle={toggle}
+              custody={custodyOf(loans, specimen.id)}
+              overdue={loan ? isOverdue(loan) : false}
+              footer={
+                <>
+                  <Link className="btn-ghost" to="/determination">
+                    去鉴定
+                  </Link>
+                  <Link className="btn-ghost" to="/storage">
+                    去入柜
+                  </Link>
+                </>
+              }
+            />
+          )
+        })}
         {filtered.length === 0 ? (
           <p className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-400">
             没有命中的标本，调整筛选条件或去「采集登记」新增

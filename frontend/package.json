@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --port 21815"
+    "preview": "vite preview --port 21815",
+    "test:loans": "esbuild scripts/loan-smoke.mts --bundle --platform=node --format=esm --outfile=scripts/loan-smoke.mjs --log-level=warning && node scripts/loan-smoke.mjs",
+    "test:upgrade": "esbuild scripts/upgrade-smoke.mts --bundle --platform=node --format=esm --outfile=scripts/upgrade-smoke.mjs --log-level=warning && node scripts/upgrade-smoke.mjs",
+    "test": "npm run test:loans && npm run test:upgrade"
   },
   "dependencies": {
     "dexie": "^4.0.11",
@@ -21,6 +24,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "fake-indexeddb": "^6.2.5",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.6.3",

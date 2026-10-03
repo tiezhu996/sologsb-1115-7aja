@@ -4,6 +4,8 @@ import { specimenStore } from '@/stores/specimenStore'
 import { siteStore } from '@/stores/siteStore'
 import { storageStore } from '@/stores/storageStore'
 import { determinationStore } from '@/stores/determinationStore'
+import { loanStore } from '@/stores/loanStore'
+import { custodyOf } from '@/utils/custody'
 
 const NAV = [
   { to: '/specimens', label: '标本清单', hint: '筛选 / 批量推进' },
@@ -19,8 +21,11 @@ export default function AppLayout(): JSX.Element {
   const sites = usePersistentStore(siteStore, (state) => state.rows)
   const storages = usePersistentStore(storageStore, (state) => state.rows)
   const determinations = usePersistentStore(determinationStore, (state) => state.rows)
+  const loans = usePersistentStore(loanStore, (state) => state.rows)
 
   const pending = specimens.filter((item) => item.status === '待鉴定').length
+  const loaned = specimens.filter((item) => custodyOf(loans, item.id) === '外借中').length
+  const awaiting = specimens.filter((item) => custodyOf(loans, item.id) === '待归位').length
 
   return (
     <div className="flex min-h-screen">
@@ -64,8 +69,16 @@ export default function AppLayout(): JSX.Element {
             <dd className="font-semibold">{sites.length}</dd>
           </div>
           <div className="flex justify-between">
-            <dt>已入柜</dt>
+            <dt>在柜</dt>
             <dd className="font-semibold">{storages.length}</dd>
+          </div>
+          <div className="flex justify-between text-violet-200">
+            <dt>外借中</dt>
+            <dd className="font-semibold">{loaned}</dd>
+          </div>
+          <div className="flex justify-between text-amber-200">
+            <dt>待归位</dt>
+            <dd className="font-semibold">{awaiting}</dd>
           </div>
           <div className="flex justify-between">
             <dt>鉴定记录</dt>

@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
-import type { CollectSite, Specimen } from '@/types'
+import type { CollectSite, CustodyStatus, Specimen } from '@/types'
 import { specimenTaxon } from '@/utils/codec'
 import StatusTag from './StatusTag'
+import CustodyTag from './CustodyTag'
 
 export interface SpecimenCardProps {
   specimen: Specimen
@@ -12,11 +13,15 @@ export interface SpecimenCardProps {
   selectable?: boolean
   onToggle?: (id: string) => void
   onOpen?: (specimen: Specimen) => void
+  /** 保管状态（在库 / 外借中 / 待归位），由借还记录派生；不传则不显示 */
+  custody?: CustodyStatus
+  /** 外借逾期标记 */
+  overdue?: boolean
   /** 卡片底部自定义操作区 */
   footer?: ReactNode
 }
 
-/** 标本摘要卡片：分类阶元 + 采集地 + 鉴定状态 */
+/** 标本摘要卡片：分类阶元 + 采集地 + 鉴定状态 + 保管状态 */
 export default function SpecimenCard({
   specimen,
   site,
@@ -24,6 +29,8 @@ export default function SpecimenCard({
   selectable = false,
   onToggle,
   onOpen,
+  custody,
+  overdue = false,
   footer
 }: SpecimenCardProps): JSX.Element {
   return (
@@ -60,7 +67,10 @@ export default function SpecimenCard({
             </p>
           </div>
         </div>
-        <StatusTag status={specimen.status} />
+        <div className="flex flex-col items-end gap-1">
+          <StatusTag status={specimen.status} />
+          {custody ? <CustodyTag status={custody} overdue={overdue} /> : null}
+        </div>
       </header>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-600">
         <div>
