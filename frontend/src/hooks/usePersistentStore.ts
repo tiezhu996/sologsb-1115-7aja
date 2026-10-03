@@ -1,22 +1,23 @@
 import { useStore } from 'zustand'
 import type { StoreApi, UseBoundStore } from 'zustand'
 import Dexie, { type Table } from 'dexie'
-import type { CollectSite, Determination, Specimen, Storage } from '@/types'
+import type { CollectSite, Determination, Loan, Specimen, Storage } from '@/types'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：标本 / 采集地 / 保藏位置 / 鉴定记录 四张业务表 + 元数据表 */
+/** Dexie 封装：标本 / 采集地 / 保藏位置 / 鉴定记录 / 外借记录 五张业务表 + 元数据表 */
 class InsectLogDb extends Dexie {
   specimens!: Table<Specimen, string>
   sites!: Table<CollectSite, string>
   storages!: Table<Storage, string>
   determinations!: Table<Determination, string>
+  loans!: Table<Loan, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -29,7 +30,7 @@ class InsectLogDb extends Dexie {
       meta: 'key'
     })
     // v2：新增「采集方式」字段，迁移时为历史标本补齐默认采集方式（扫网）
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         specimens: 'id, code, order, family, status, siteId, collectDate',
         sites: 'id, code, name, habitat',
@@ -47,6 +48,16 @@ class InsectLogDb extends Dexie {
             }
           })
       })
+    // v3：新增「外借记录」表。旧数据没有任何借还记录，柜位仍在 storages 表中，
+    // 保管状态派生于 storages 左连接 loans，故历史标本自动按「在库」兼容，无需升级回填。
+    this.version(SCHEMA_VERSION).stores({
+      specimens: 'id, code, order, family, status, siteId, collectDate',
+      sites: 'id, code, name, habitat',
+      storages: 'id, specimenId, cabinet, drawer',
+      determinations: 'id, specimenId, determiner, date',
+      loans: 'id, batchId, specimenId, state, borrower',
+      meta: 'key'
+    })
   }
 }
 
@@ -212,6 +223,66 @@ export async function seedDemoData(): Promise<void> {
       determiner: '',
       siteId: 'site_shr',
       note: '酒精浸液保存，待制片'
+    },
+    {
+      id: 'sp_005',
+      code: 'QLB-2026-0003',
+      order: '半翅目',
+      family: '蝽科',
+      genus: 'Palomena',
+      species: '',
+      tempName: '绿蝽未定种',
+      collectDate: today,
+      collector: '陆昀',
+      sex: '雌',
+      stage: '成虫',
+      bodyLength: 12.8,
+      method: '扫网',
+      quantity: 1,
+      status: '已鉴定',
+      determiner: '覃羽',
+      siteId: 'site_qlb',
+      note: '整批借往省昆虫研究所比对'
+    },
+    {
+      id: 'sp_006',
+      code: 'QLB-2026-0004',
+      order: '鞘翅目',
+      family: '金龟科',
+      genus: '',
+      species: '',
+      tempName: '花金龟未定种',
+      collectDate: today,
+      collector: '陆昀',
+      sex: '雄',
+      stage: '成虫',
+      bodyLength: 21.3,
+      method: '灯诱',
+      quantity: 1,
+      status: '初鉴',
+      determiner: '覃羽',
+      siteId: 'site_qlb',
+      note: '外借归还，原柜位被占用，暂放待归位区'
+    },
+    {
+      id: 'sp_007',
+      code: 'SHR-2026-0003',
+      order: '蜻蜓目',
+      family: '蜓科',
+      genus: 'Anax',
+      species: '',
+      tempName: '伟蜓未定种',
+      collectDate: today,
+      collector: '蓝澈',
+      sex: '未知',
+      stage: '成虫',
+      bodyLength: 74.0,
+      method: '徒手',
+      quantity: 1,
+      status: '已鉴定',
+      determiner: '蓝澈',
+      siteId: 'site_shr',
+      note: '外借期间补入了 sp_006 的原柜位'
     }
   ])
 
@@ -260,6 +331,71 @@ export async function seedDemoData(): Promise<void> {
       slot: 5,
       storedDate: today,
       handler: '覃羽'
+    },
+    {
+      id: 'stg_003',
+      specimenId: 'sp_007',
+      method: '针插',
+      cabinet: 'C01',
+      drawer: 1,
+      box: 2,
+      slot: 6,
+      storedDate: today,
+      handler: '覃羽'
+    }
+  ])
+
+  const daysAgo = (days: number): string => {
+    const date = new Date(`${today}T00:00:00`)
+    date.setDate(date.getDate() - days)
+    return date.toISOString().slice(0, 10)
+  }
+  const daysAhead = (days: number): string => {
+    const date = new Date(`${today}T00:00:00`)
+    date.setDate(date.getDate() + days)
+    return date.toISOString().slice(0, 10)
+  }
+
+  await db.loans.bulkPut([
+    {
+      id: 'demo_loan_01__sp_005',
+      batchId: 'demo_loan_01',
+      specimenId: 'sp_005',
+      borrower: '省昆虫研究所标本馆',
+      loanDate: daysAgo(9),
+      dueDate: daysAhead(21),
+      handler: '覃羽',
+      state: '外借中',
+      originCabinet: 'C01',
+      originDrawer: 1,
+      originBox: 1,
+      originSlot: 1,
+      originMethod: '针插',
+      returnedDate: '',
+      placedCabinet: '',
+      placedDrawer: 0,
+      placedBox: 0,
+      placedSlot: 0
+    },
+    {
+      id: 'demo_loan_02__sp_006',
+      batchId: 'demo_loan_02',
+      specimenId: 'sp_006',
+      borrower: '州林业检疫中心',
+      loanDate: daysAgo(40),
+      dueDate: daysAgo(10),
+      handler: '覃羽',
+      state: '待归位',
+      originCabinet: 'C01',
+      originDrawer: 1,
+      originBox: 2,
+      originSlot: 6,
+      originMethod: '针插',
+      returnedDate: daysAgo(2),
+      placedCabinet: '',
+      placedDrawer: 0,
+      placedBox: 0,
+      placedSlot: 0
     }
   ])
 }

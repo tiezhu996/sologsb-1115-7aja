@@ -37,6 +37,7 @@ FRONTEND_PORT=21815
 | 路由 | React Router 6（nginx `try_files` 回落，支持直接刷新子路由） |
 | 构建 | Vite 5 |
 | 本地存储 | IndexedDB（Dexie 封装，含 `schemaVersion` 与升级迁移） |
+| 单元测试 | Vitest + fake-indexeddb（`npm test`，覆盖借还事务/幂等/失败补偿） |
 | 部署 | 多阶段 Dockerfile：`node:20-alpine` 构建 → `nginx:alpine` 托管 |
 
 ## 三、本地开发
@@ -46,6 +47,7 @@ cd frontend
 npm install
 npm run dev        # http://localhost:21815
 npm run build      # 类型检查 + 生产构建
+npm test           # 借还流程单元测试（fake-indexeddb）
 ```
 
 > 本地开发无需任何后端服务或环境变量。
@@ -62,13 +64,13 @@ sologsb-1115/
 │   ├── tailwind.config.js / postcss.config.js
 │   ├── public/favicon.svg
 │   └── src/
-│       ├── types/              # specimen.ts / site.ts / storage.ts / determination.ts / index.ts
-│       ├── stores/             # specimenStore / siteStore / storageStore / determinationStore（Zustand）
-│       ├── components/common/  # SpecimenCard / StatusTag / CabinetGrid / SitePicker
+│       ├── types/              # specimen.ts / site.ts / storage.ts / determination.ts / loan.ts
+│       ├── stores/             # specimenStore / siteStore / storageStore / determinationStore / loanStore（Zustand）
+│       ├── components/common/  # SpecimenCard / StatusTag / CustodyTag / CabinetGrid / SitePicker
 │       ├── hooks/              # usePersistentStore / useSpecimenFilter
+│       ├── utils/              # codec.ts / custody.ts / export.ts / id.ts
 │       ├── pages/              # SpecimensPage / SitesPage / CollectPage / DeterminationPage / StoragePage
 │       ├── router/index.tsx
-│       └── utils/              # codec.ts / export.ts / id.ts
 ```
 
 ## 五、数据模型与存储
@@ -77,27 +79,45 @@ sologsb-1115/
 | --- | --- | --- |
 | Specimen 标本 | 编号、目/科/属/种、暂定名、采集日期与人、性别虫态、体长、采集方式、数量、鉴定状态 | `specimens` |
 | CollectSite 采集地 | 代码、名称、行政区、经纬度海拔、生境类型、小生境、微气候、采集日期区间 | `sites` |
-| Storage 保藏位置 | 保藏方式、柜/抽屉/盒/插位序号、入柜日期、经手人 | `storages` |
+| Storage 保藏位置 | 保藏方式、柜/抽屉/盒/插位序号、入柜日期、经手人；外借时删除记录释放柜位，归还回原柜时按确定性 ID 重建 | `storages` |
 | Determination 鉴定记录 | 鉴定人、日期、结论（学名）、依据文献、置信度、是否需复核 | `determinations` |
+| Loan 外借记录 | 批次号、借用人、借出/应还/归还日期、原柜位快照、状态（外借中/待归位/已归位）、实际归位 | `loans` |
 
 - 数据库名 `gbinsectlog`，`meta` 表保存 `schemaVersion`；
 - `version(2)` 升级迁移会为历史标本补齐默认采集方式（扫网）；
+- `version(3)` 新增 `loans` 表：**旧数据没有借还记录，保管状态由 storages 左连接 loans 派生，历史标本自动按「在库 / 未入柜」兼容，无需回填**；
+- 借还记录 ID 为 `${batchId}__${specimenId}` 的确定性 ID，整批外借失败后沿用同一批次号重试只会覆盖、不会多出记录；
 - 标本编号规则：`采集地代码-年份-流水号`（如 `QLB-2026-0007`），提交时自动分配并查重；
 - 数据仅存于浏览器本地，容器无状态、不挂载命名卷。
+
+### 保管状态口径
+
+统一由 `utils/custody.ts` 的 `buildCustodyBundle` 派生，柜位图、标本清单、鉴定页三处完全一致：
+
+| 保管状态 | 判定 |
+| --- | --- |
+| 在库 | 有在柜记录且无进行中的借还 |
+| 外借中 | 有 `state=外借中` 的借还记录（柜位已释放，原柜位图上保留归属标记） |
+| 待归位 | 已登记归还，但原柜位已被其他标本占用（保留原柜位，标本在待归位区） |
+| 未入柜 | 无在柜记录、也无进行中的借还 |
 
 ## 六、主要页面
 
 | 路由 | 功能 |
 | --- | --- |
-| `/specimens` | 标本清单：按目/科、鉴定状态、采集地、采集日期区间与关键字组合筛选，多选批量推进鉴定状态，导出命中清单 |
+| `/specimens` | 标本清单：按目/科、鉴定/保管状态、采集地、采集日期区间与关键字组合筛选，多选批量推进鉴定状态，保管状态与柜位图同口径，导出命中清单 |
 | `/collect` | 采集登记：选择采集地后自动带出生境/小生境/微气候，一次提交多条同批次标本，编号自动生成并查重 |
 | `/sites` | 采集地管理：经纬度格式校验、各地采集次数统计、50 米内邻近采集地提示与一键合并 |
-| `/determination` | 鉴定工作流：待鉴定队列逐条处理，落鉴定记录并自动推进标本状态（已鉴定 / 待复核） |
-| `/storage` | 保藏柜位图：柜-抽屉-盒-位三级展开，空位/占用一目了然，拖拽入柜，重复占用给出占用提示 |
+| `/determination` | 鉴定工作流：外借中标本自动移出待鉴定队列且禁止新增鉴定；其余逐条落鉴定记录并推进状态 |
+| `/storage` | 保藏柜位图：多选整批外借（记借用人/期限/原柜位并释放柜位）、登记归还（原柜空则放回、被占进待归位区）、待归位标本归位 |
 
 ## 七、业务约定
 
 - 采集地代码是标本编号前缀，代码重复会被拒绝；
 - 坐标 50 米内视为同一采集地，页面上给出合并提示，合并会把原采集地标本自动改挂；
 - 鉴定记录提交后自动把标本状态推进为「已鉴定」，勾选「需复核」则置为「待复核」；
-- 同一柜位（柜-屉-盒-位）只允许一份标本，冲突时列出已有标本编号。
+- 同一柜位（柜-屉-盒-位）只允许一份标本，冲突时列出已有标本编号；
+- **外借**：只能勾选在库标本，整批确认后在同一 Dexie 事务中删除原柜位记录并写入借还记录；外借期间不能入柜、鉴定页不能新增鉴定、标本清单不能批量推进鉴定状态；
+- **归还**：原柜位仍空 → 自动放回原柜并置「已归位」；原柜位已被占用 → 进「待归位」区且保留原柜位快照，不挤掉现有标本；待归位标本可一键放回原柜（空位时）或拖到其他空插位；
+- **写入失败**：借还写入先快照受影响记录再执行原子事务；事务失败自动回滚，事务外异常按快照恢复原柜位、借出状态与待归还清单，配合确定性记录 ID，重试不会多出任何柜位/借还记录；
+- **旧数据兼容**：v3 升级不做数据回填，没有借还记录的标本统一按在库/未入柜处理，柜位图、标本清单、鉴定页显示同一保管状态。

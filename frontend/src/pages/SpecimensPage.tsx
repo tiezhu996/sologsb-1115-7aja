@@ -1,21 +1,28 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { DetStatus, Specimen } from '@/types'
-import { DET_STATUSES } from '@/types'
+import type { CustodyStatus, DetStatus, Specimen } from '@/types'
+import { CUSTODY_STATUSES, DET_STATUSES } from '@/types'
 import SpecimenCard from '@/components/common/SpecimenCard'
-import StatusTag from '@/components/common/StatusTag'
+import CustodyTag from '@/components/common/CustodyTag'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { useSpecimenFilter } from '@/hooks/useSpecimenFilter'
 import { specimenStore } from '@/stores/specimenStore'
 import { siteStore } from '@/stores/siteStore'
+import { storageStore } from '@/stores/storageStore'
+import { loanStore } from '@/stores/loanStore'
+import { buildCustodyBundle } from '@/utils/custody'
 import { downloadCsv } from '@/utils/export'
 import { specimenTaxon } from '@/utils/codec'
 
-/** 标本清单：组合筛选 + 多选批量推进鉴定状态 */
+/** 标本清单：组合筛选（含保管状态）+ 多选批量推进鉴定状态 */
 export default function SpecimensPage(): JSX.Element {
   const specimens = usePersistentStore(specimenStore, (state) => state.rows)
   const sites = usePersistentStore(siteStore, (state) => state.rows)
-  const { filter, setFilter, reset, filtered, hitCount, orders, families } = useSpecimenFilter(specimens)
+  const storages = usePersistentStore(storageStore, (state) => state.rows)
+  const loans = usePersistentStore(loanStore, (state) => state.rows)
+  const custody = useMemo(() => buildCustodyBundle(specimens, storages, loans), [specimens, storages, loans])
+  const custodyOf = useMemo(() => (id: string) => custody.statusOf.get(id), [custody])
+  const { filter, setFilter, reset, filtered, hitCount, orders, families } = useSpecimenFilter(specimens, custodyOf)
   const [selected, setSelected] = useState<string[]>([])
   const [batchStatus, setBatchStatus] = useState<DetStatus>('初鉴')
   const [message, setMessage] = useState('')
@@ -36,6 +43,11 @@ export default function SpecimensPage(): JSX.Element {
       setMessage('请先勾选要推进状态的标本')
       return
     }
+    const onLoan = selected.filter((id) => custodyOf(id) === '外借中')
+    if (onLoan.length > 0) {
+      setMessage(`外借中的标本不能推进鉴定：${onLoan.map((id) => specimens.find((sp) => sp.id === id)?.code ?? id).join('、')}，请先剔除`)
+      return
+    }
     await specimenStore.getState().bulkSetStatus(selected, batchStatus)
     setMessage(`已把 ${selected.length} 份标本推进为「${batchStatus}」`)
     setSelected([])
@@ -50,6 +62,7 @@ export default function SpecimensPage(): JSX.Element {
       method: item.method,
       quantity: item.quantity,
       status: item.status,
+      custody: custodyOf(item.id) ?? '未入柜',
       determiner: item.determiner
     }))
     downloadCsv('标本清单.csv', rows as unknown as Record<string, unknown>[], [
@@ -60,11 +73,13 @@ export default function SpecimensPage(): JSX.Element {
       { key: 'method', label: '采集方式' },
       { key: 'quantity', label: '数量' },
       { key: 'status', label: '鉴定状态' },
+      { key: 'custody', label: '保管状态' },
       { key: 'determiner', label: '鉴定人' }
     ])
   }
 
-  const statusCount = (status: DetStatus): number => specimens.filter((item) => item.status === status).length
+  const custodyCount = (status: CustodyStatus): number =>
+    specimens.filter((item) => custodyOf(item.id) === status).length
 
   return (
     <div className="flex flex-col gap-5">
@@ -121,6 +136,21 @@ export default function SpecimensPage(): JSX.Element {
           >
             <option value="">全部</option>
             {DET_STATUSES.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <span className="field-label">保管状态</span>
+          <select
+            className="field-input w-32"
+            value={filter.custody}
+            onChange={(e) => setFilter({ custody: e.target.value as CustodyStatus | '' })}
+          >
+            <option value="">全部</option>
+            {CUSTODY_STATUSES.map((status) => (
               <option key={status} value={status}>
                 {status}
               </option>
@@ -196,9 +226,9 @@ export default function SpecimensPage(): JSX.Element {
           批量推进状态
         </button>
         <div className="ml-auto flex flex-wrap gap-2 text-xs text-slate-500">
-          {DET_STATUSES.map((status) => (
+          {CUSTODY_STATUSES.map((status) => (
             <span key={status} className="inline-flex items-center gap-1">
-              <StatusTag status={status} /> {statusCount(status)}
+              <CustodyTag status={status} /> {custodyCount(status)}
             </span>
           ))}
         </div>
@@ -211,6 +241,7 @@ export default function SpecimensPage(): JSX.Element {
             key={specimen.id}
             specimen={specimen}
             site={siteMap.get(specimen.siteId)}
+            custody={custodyOf(specimen.id)}
             selectable
             selected={selectedSet.has(specimen.id)}
             onToggle={toggle}
